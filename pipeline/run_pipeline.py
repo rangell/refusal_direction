@@ -2,9 +2,14 @@ import torch
 import random
 import json
 import os
+import pickle
 import argparse
 
 from dataset.load_dataset import load_dataset_split, load_dataset
+
+import nanogcg
+from nanogcg import GCGConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 from pipeline.config import Config
 from pipeline.model_utils.model_factory import construct_model_base
@@ -103,9 +108,18 @@ def generate_and_save_completions_for_dataset(cfg, model_base, fwd_pre_hooks, fw
         dataset = load_dataset(dataset_name)
 
     completions = model_base.generate_completions(dataset, fwd_pre_hooks=fwd_pre_hooks, fwd_hooks=fwd_hooks, max_new_tokens=cfg.max_new_tokens)
-    
+
     with open(f'{cfg.artifact_path()}/completions/{dataset_name}_{intervention_label}_completions.json', "w") as f:
         json.dump(completions, f, indent=4)
+
+def generate_and_return_completions_for_dataset(cfg, model_base, fwd_pre_hooks, fwd_hooks, intervention_label, dataset_name, dataset=None):
+    """Generate and return completions for a dataset."""
+    if dataset is None:
+        dataset = load_dataset(dataset_name)
+
+    completions = model_base.generate_completions(dataset, fwd_pre_hooks=fwd_pre_hooks, fwd_hooks=fwd_hooks, max_new_tokens=cfg.max_new_tokens)
+    
+    return completions
 
 def evaluate_completions_and_save_results_for_dataset(cfg, intervention_label, dataset_name, eval_methodologies):
     """Evaluate completions and save results for a dataset."""
@@ -136,7 +150,7 @@ def evaluate_loss_for_datasets(cfg, model_base, fwd_pre_hooks, fwd_hooks, interv
 def run_pipeline(model_path):
     """Run the full pipeline."""
     model_alias = os.path.basename(model_path)
-    cfg = Config(model_alias=model_alias, model_path=model_path)
+    cfg = Config(model_alias=model_alias, model_path=model_path, max_new_tokens=64)
 
     model_base = construct_model_base(cfg.model_path)
 
@@ -156,34 +170,83 @@ def run_pipeline(model_path):
     ablation_fwd_pre_hooks, ablation_fwd_hooks = get_all_direction_ablation_hooks(model_base, direction)
     actadd_fwd_pre_hooks, actadd_fwd_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=-1.0))], []
 
-    # 3a. Generate and save completions on harmful evaluation datasets
-    for dataset_name in cfg.evaluation_datasets:
-        generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', dataset_name)
-        generate_and_save_completions_for_dataset(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation', dataset_name)
-        generate_and_save_completions_for_dataset(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd', dataset_name)
+    # 3. (rangell) Generate and return completions for the forbidden prompts we care about
+    forbidden_completions = generate_and_return_completions_for_dataset(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation', "strongreject")
 
-    # 3b. Evaluate completions and save results on harmful evaluation datasets
-    for dataset_name in cfg.evaluation_datasets:
-        evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
-        evaluate_completions_and_save_results_for_dataset(cfg, 'ablation', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
-        evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
+    #from IPython import embed; embed(); exit()
+
+    #with open("strongreject_forbidden_completions.pkl", "wb") as f:
+    #    pickle.dump(forbidden_completions, f)
     
-    # 4a. Generate and save completions on harmless evaluation dataset
-    harmless_test = random.sample(load_dataset_split(harmtype='harmless', split='test'), cfg.n_test)
+    #with open("llama3.2-3b-forbidden_completions.pkl", "rb") as f:
+    #    forbidden_completions = pickle.load(f)
 
-    generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', 'harmless', dataset=harmless_test)
+
+    model = AutoModelForCausalLM.from_pretrained(cfg.model_path, torch_dtype=torch.float16).to("cuda")
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
     
-    actadd_refusal_pre_hooks, actadd_refusal_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=+1.0))], []
-    generate_and_save_completions_for_dataset(cfg, model_base, actadd_refusal_pre_hooks, actadd_refusal_hooks, 'actadd', 'harmless', dataset=harmless_test)
+    message = forbidden_completions[2]["prompt"]
+    target = forbidden_completions[2]["response"]
 
-    # 4b. Evaluate completions and save results on harmless evaluation dataset
-    evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
-    evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
+    # truncate target length
+    target = tokenizer.decode(tokenizer(target)["input_ids"][1:65])
 
-    # 5. Evaluate loss on harmless datasets
-    evaluate_loss_for_datasets(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline')
-    evaluate_loss_for_datasets(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation')
-    evaluate_loss_for_datasets(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd')
+    config = GCGConfig(
+    	num_steps=500,
+    	search_width=64,
+    	topk=64,
+    	seed=42,
+    	verbosity="WARNING"
+    )
+    
+    result = nanogcg.run(model, tokenizer, message, target, config)
+    
+    prompts = [message + " " + result.best_string]
+    
+    generator = pipeline(model=cfg.model_path)
+    orig_response = generator([{"role": "user", "content": prompts[0]}], do_sample=True)
+    
+    print("orig_response: ", orig_response)
+    
+    del generator
+    
+    generator = pipeline(model="meta-llama/Llama-3.2-1B-Instruct")
+    transfer_response = generator([{"role": "user", "content": prompts[0]}], do_sample=True)
+    
+    print("transfer_response: ", transfer_response)
+    
+    
+    from IPython import embed; embed(); exit()
+
+
+    ## 3a. Generate and save completions on harmful evaluation datasets
+    #for dataset_name in cfg.evaluation_datasets:
+    #    generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', dataset_name)
+    #    generate_and_save_completions_for_dataset(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation', dataset_name)
+    #    generate_and_save_completions_for_dataset(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd', dataset_name)
+
+    ## 3b. Evaluate completions and save results on harmful evaluation datasets
+    #for dataset_name in cfg.evaluation_datasets:
+    #    evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
+    #    evaluate_completions_and_save_results_for_dataset(cfg, 'ablation', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
+    #    evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
+    #
+    ## 4a. Generate and save completions on harmless evaluation dataset
+    #harmless_test = random.sample(load_dataset_split(harmtype='harmless', split='test'), cfg.n_test)
+
+    #generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', 'harmless', dataset=harmless_test)
+    #
+    #actadd_refusal_pre_hooks, actadd_refusal_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=+1.0))], []
+    #generate_and_save_completions_for_dataset(cfg, model_base, actadd_refusal_pre_hooks, actadd_refusal_hooks, 'actadd', 'harmless', dataset=harmless_test)
+
+    ## 4b. Evaluate completions and save results on harmless evaluation dataset
+    #evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
+    #evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
+
+    ## 5. Evaluate loss on harmless datasets
+    #evaluate_loss_for_datasets(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline')
+    #evaluate_loss_for_datasets(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation')
+    #evaluate_loss_for_datasets(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd')
 
 if __name__ == "__main__":
     args = parse_arguments()
