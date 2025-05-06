@@ -11,9 +11,10 @@ In the spirit of scientific reproducibility, we provide code to reproduce the ma
 ## Setup
 
 ```bash
-git clone https://github.com/andyrdt/refusal_direction.git
+git clone https://github.com/rangell/refusal_direction.git
 cd refusal_direction
 source setup.sh
+pip install nanogcg
 ```
 
 The setup script will prompt you for a HuggingFace token (required to access gated models) and a Together AI token (required to access the Together AI API, which is used for evaluating jailbreak safety scores).
