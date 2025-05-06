@@ -178,6 +178,7 @@ def select_direction(
             refusal_scores = get_refusal_scores(model_base.model, harmful_instructions, model_base.tokenize_instructions_fn, model_base.refusal_toks, fwd_pre_hooks=fwd_pre_hooks, fwd_hooks=fwd_hooks, batch_size=batch_size)
             ablation_refusal_scores[source_pos, source_layer] = refusal_scores.mean().item()
 
+
     for source_pos in range(-n_pos, 0):
         for source_layer in tqdm(range(n_layer), desc=f"Computing refusal addition for source position {source_pos}"):
 
@@ -235,6 +236,8 @@ def select_direction(
             refusal_score = ablation_refusal_scores[source_pos, source_layer].item()
             steering_score = steering_refusal_scores[source_pos, source_layer].item()
             kl_div_score = ablation_kl_div_scores[source_pos, source_layer].item()
+
+            from IPython import embed; embed(); exit()
 
             # we sort the directions in descending order (from highest to lowest score)
             # the intervention is better at bypassing refusal if the refusal score is low, so we multiply by -1

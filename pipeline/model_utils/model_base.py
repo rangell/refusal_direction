@@ -9,9 +9,10 @@ from pipeline.utils.hook_utils import add_hooks
 class ModelBase(ABC):
     def __init__(self, model_name_or_path: str):
         self.model_name_or_path = model_name_or_path
-        self.model: AutoModelForCausalLM = self._load_model(model_name_or_path)
-        self.tokenizer: AutoTokenizer = self._load_tokenizer(model_name_or_path)
         
+        self.model: AutoModelForCausalLM = self._load_model(model_name_or_path[0] if isinstance(model_name_or_path, tuple) else model_name_or_path)
+        self.tokenizer: AutoTokenizer = self._load_tokenizer(model_name_or_path[1] if isinstance(model_name_or_path, tuple) else model_name_or_path)
+
         self.tokenize_instructions_fn = self._get_tokenize_instructions_fn()
         self.eoi_toks = self._get_eoi_toks()
         self.refusal_toks = self._get_refusal_toks()

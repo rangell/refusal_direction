@@ -79,7 +79,7 @@ def tokenize_instructions_qwen_chat(
 
 def orthogonalize_qwen_weights(model, direction: Float[Tensor, "d_model"]):
     model.transformer.wte.weight.data = get_orthogonalized_matrix(model.transformer.wte.weight.data, direction)
-
+#
     for block in model.transformer.h:
         block.attn.c_proj.weight.data = get_orthogonalized_matrix(block.attn.c_proj.weight.data.T, direction).T
         block.mlp.c_proj.weight.data = get_orthogonalized_matrix(block.mlp.c_proj.weight.data.T, direction).T
@@ -97,17 +97,17 @@ class QwenModel(ModelBase):
 
     def _load_model(self, model_path, dtype=torch.float16):
         model_kwargs = {}
-        model_kwargs.update({"use_flash_attn": True})
-        if dtype != "auto":
-            model_kwargs.update({
-                "bf16": dtype==torch.bfloat16,
-                "fp16": dtype==torch.float16,
-                "fp32": dtype==torch.float32,
-            })
+        #model_kwargs.update({"use_flash_attn": True})
+        #if dtype != "auto":
+        #    model_kwargs.update({
+        #        "bf16": dtype==torch.bfloat16,
+        #        "fp16": dtype==torch.float16,
+        #        "fp32": dtype==torch.float32,
+        #    })
 
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=dtype,
+            torch_dtype=torch.bfloat16,
             trust_remote_code=True,
             device_map="auto",
             **model_kwargs,
@@ -126,7 +126,9 @@ class QwenModel(ModelBase):
 
         tokenizer.padding_side = 'left'
         tokenizer.pad_token = '<|extra_0|>'
-        tokenizer.pad_token_id = tokenizer.eod_id # See https://github.com/QwenLM/Qwen/blob/main/FAQ.md#tokenizer
+
+        #tokenizer.pad_token_id = tokenizer.eod_id # See https://github.com/QwenLM/Qwen/blob/main/FAQ.md#tokenizer
+        tokenizer.pad_token_id = tokenizer.eos_token_id # See https://github.com/QwenLM/Qwen/blob/main/FAQ.md#tokenizer
 
         return tokenizer
 
@@ -140,10 +142,12 @@ class QwenModel(ModelBase):
         return QWEN_REFUSAL_TOKS
 
     def _get_model_block_modules(self):
-        return self.model.transformer.h
+        #return self.model.transformer.h
+        return self.model.model.layers
 
     def _get_attn_modules(self):
-        return torch.nn.ModuleList([block_module.attn for block_module in self.model_block_modules])
+        #return torch.nn.ModuleList([block_module.attn for block_module in self.model_block_modules])
+        return torch.nn.ModuleList([block_module.self_attn for block_module in self.model_block_modules])
     
     def _get_mlp_modules(self):
         return torch.nn.ModuleList([block_module.mlp for block_module in self.model_block_modules])

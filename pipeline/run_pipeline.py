@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import argparse
+import copy
 
 from dataset.load_dataset import load_dataset_split, load_dataset
 
@@ -59,6 +60,7 @@ def filter_data(cfg, model_base, harmful_train, harmless_train, harmful_val, har
     if cfg.filter_val:
         harmful_val_scores = get_refusal_scores(model_base.model, harmful_val, model_base.tokenize_instructions_fn, model_base.refusal_toks)
         harmless_val_scores = get_refusal_scores(model_base.model, harmless_val, model_base.tokenize_instructions_fn, model_base.refusal_toks)
+
         harmful_val = filter_examples(harmful_val, harmful_val_scores, 0, lambda x, y: x > y)
         harmless_val = filter_examples(harmless_val, harmless_val_scores, 0, lambda x, y: x < y)
     
@@ -149,19 +151,29 @@ def evaluate_loss_for_datasets(cfg, model_base, fwd_pre_hooks, fwd_hooks, interv
 
 def run_pipeline(model_path):
     """Run the full pipeline."""
-    model_alias = os.path.basename(model_path)
+    if "(" in model_path:
+        model_path = eval(model_path)
+
+    if isinstance(model_path, tuple):
+        model_alias = "---".join(model_path).replace("/", "--")[2:]
+    else:
+        model_alias = model_path.replace("/", "--")
+
     cfg = Config(model_alias=model_alias, model_path=model_path, max_new_tokens=64)
 
     model_base = construct_model_base(cfg.model_path)
 
     # Load and sample datasets
     harmful_train, harmless_train, harmful_val, harmless_val = load_and_sample_datasets(cfg)
-    
+
     # Filter datasets based on refusal scores
     harmful_train, harmless_train, harmful_val, harmless_val = filter_data(cfg, model_base, harmful_train, harmless_train, harmful_val, harmless_val)
 
+    #from IPython import embed; embed(); exit()
+
     # 1. Generate candidate refusal directions
     candidate_directions = generate_and_save_candidate_directions(cfg, model_base, harmful_train, harmless_train)
+
     
     # 2. Select the most effective refusal direction
     pos, layer, direction = select_and_save_direction(cfg, model_base, harmful_val, harmless_val, candidate_directions)
@@ -184,39 +196,35 @@ def run_pipeline(model_path):
 
     model = AutoModelForCausalLM.from_pretrained(cfg.model_path, torch_dtype=torch.float16).to("cuda")
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
-    
-    message = forbidden_completions[2]["prompt"]
-    target = forbidden_completions[2]["response"]
 
-    # truncate target length
-    target = tokenizer.decode(tokenizer(target)["input_ids"][1:65])
+    jailbreaks = []
+    for forbidden_datum in forbidden_completions:
+        _forbidden_datum = copy.deepcopy(forbidden_datum)
+        message = _forbidden_datum["prompt"]
+        target = _forbidden_datum["response"]
 
-    config = GCGConfig(
-    	num_steps=500,
-    	search_width=64,
-    	topk=64,
-    	seed=42,
-    	verbosity="WARNING"
-    )
-    
-    result = nanogcg.run(model, tokenizer, message, target, config)
-    
-    prompts = [message + " " + result.best_string]
-    
-    generator = pipeline(model=cfg.model_path)
-    orig_response = generator([{"role": "user", "content": prompts[0]}], do_sample=True)
-    
-    print("orig_response: ", orig_response)
-    
-    del generator
-    
-    generator = pipeline(model="meta-llama/Llama-3.2-1B-Instruct")
-    transfer_response = generator([{"role": "user", "content": prompts[0]}], do_sample=True)
-    
-    print("transfer_response: ", transfer_response)
-    
-    
-    from IPython import embed; embed(); exit()
+        # truncate target length
+        target = tokenizer.decode(tokenizer(target)["input_ids"][1:65])
+
+        config = GCGConfig(
+            num_steps=500,
+            search_width=64,
+            topk=64,
+            seed=42,
+            verbosity="WARNING"
+        )
+        
+        result = nanogcg.run(model, tokenizer, message, target, config)
+        
+        _forbidden_datum["jailbreak_prompt"] = message + " " + result.best_string
+        
+        jailbreaks.append(_forbidden_datum)
+
+        break
+
+
+    with open(f"GCG-{model_alias}.pkl", "wb") as f:
+        pickle.dump(jailbreaks, f)
 
 
     ## 3a. Generate and save completions on harmful evaluation datasets
