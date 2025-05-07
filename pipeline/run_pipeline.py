@@ -185,17 +185,10 @@ def run_pipeline(model_path):
     # 3. (rangell) Generate and return completions for the forbidden prompts we care about
     forbidden_completions = generate_and_return_completions_for_dataset(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation', "strongreject")
 
-    #from IPython import embed; embed(); exit()
 
-    #with open("strongreject_forbidden_completions.pkl", "wb") as f:
-    #    pickle.dump(forbidden_completions, f)
-    
-    #with open("llama3.2-3b-forbidden_completions.pkl", "rb") as f:
-    #    forbidden_completions = pickle.load(f)
-
-
-    model = AutoModelForCausalLM.from_pretrained(cfg.model_path, torch_dtype=torch.float16).to("cuda")
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
+    # 4. (rangell) Generate GCG jailbreaks
+    model = AutoModelForCausalLM.from_pretrained(cfg.model_path[0] if isinstance(cfg.model_path, tuple) else cfg.model_path, torch_dtype=torch.float16).to("cuda")
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_path[1] if isinstance(cfg.model_path, tuple) else cfg.model_path)
 
     jailbreaks = []
     for forbidden_datum in forbidden_completions:
@@ -216,44 +209,19 @@ def run_pipeline(model_path):
         
         result = nanogcg.run(model, tokenizer, message, target, config)
         
-        _forbidden_datum["jailbreak_prompt"] = message + " " + result.best_string
-        
+        _forbidden_datum["forbidden_prompt"] = message
+        _forbidden_datum["jailbroken_prompt"] = [{"role": "user", "content": message + " " + result.best_string}]
+        _forbidden_datum["jailbreak"] = "refusal_gcg"
+
+        del _forbidden_datum["prompt"]
+
         jailbreaks.append(_forbidden_datum)
 
-        break
+    with open(f"GCG-{model_alias}.json", "w") as f:
+        for item in jailbreaks:
+            json_line = json.dumps(item)
+            f.write(json_line + '\n')
 
-    with open(f"GCG-{model_alias}.pkl", "wb") as f:
-        pickle.dump(jailbreaks, f)
-
-
-    ## 3a. Generate and save completions on harmful evaluation datasets
-    #for dataset_name in cfg.evaluation_datasets:
-    #    generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', dataset_name)
-    #    generate_and_save_completions_for_dataset(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation', dataset_name)
-    #    generate_and_save_completions_for_dataset(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd', dataset_name)
-
-    ## 3b. Evaluate completions and save results on harmful evaluation datasets
-    #for dataset_name in cfg.evaluation_datasets:
-    #    evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
-    #    evaluate_completions_and_save_results_for_dataset(cfg, 'ablation', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
-    #    evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', dataset_name, eval_methodologies=cfg.jailbreak_eval_methodologies)
-    #
-    ## 4a. Generate and save completions on harmless evaluation dataset
-    #harmless_test = random.sample(load_dataset_split(harmtype='harmless', split='test'), cfg.n_test)
-
-    #generate_and_save_completions_for_dataset(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline', 'harmless', dataset=harmless_test)
-    #
-    #actadd_refusal_pre_hooks, actadd_refusal_hooks = [(model_base.model_block_modules[layer], get_activation_addition_input_pre_hook(vector=direction, coeff=+1.0))], []
-    #generate_and_save_completions_for_dataset(cfg, model_base, actadd_refusal_pre_hooks, actadd_refusal_hooks, 'actadd', 'harmless', dataset=harmless_test)
-
-    ## 4b. Evaluate completions and save results on harmless evaluation dataset
-    #evaluate_completions_and_save_results_for_dataset(cfg, 'baseline', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
-    #evaluate_completions_and_save_results_for_dataset(cfg, 'actadd', 'harmless', eval_methodologies=cfg.refusal_eval_methodologies)
-
-    ## 5. Evaluate loss on harmless datasets
-    #evaluate_loss_for_datasets(cfg, model_base, baseline_fwd_pre_hooks, baseline_fwd_hooks, 'baseline')
-    #evaluate_loss_for_datasets(cfg, model_base, ablation_fwd_pre_hooks, ablation_fwd_hooks, 'ablation')
-    #evaluate_loss_for_datasets(cfg, model_base, actadd_fwd_pre_hooks, actadd_fwd_hooks, 'actadd')
 
 if __name__ == "__main__":
     args = parse_arguments()
