@@ -190,36 +190,42 @@ def run_pipeline(model_path):
     model = AutoModelForCausalLM.from_pretrained(cfg.model_path[0] if isinstance(cfg.model_path, tuple) else cfg.model_path, torch_dtype=torch.float16).to("cuda")
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_path[1] if isinstance(cfg.model_path, tuple) else cfg.model_path)
 
-    jailbreaks = []
-    for forbidden_datum in forbidden_completions:
-        _forbidden_datum = copy.deepcopy(forbidden_datum)
-        message = _forbidden_datum["prompt"]
-        target = _forbidden_datum["response"]
+    num_cached = 0
+    dump_fname = f"GCG-{model_alias}.json"
+    if os.path.exists(dump_fname):
+        with open(dump_fname, "r") as f:
+            num_cached = len(f.readlines())
 
-        # truncate target length
-        target = tokenizer.decode(tokenizer(target)["input_ids"][1:65])
+    print("num_cached: ", num_cached)
 
-        config = GCGConfig(
-            num_steps=500,
-            search_width=64,
-            topk=64,
-            seed=42,
-            verbosity="WARNING"
-        )
-        
-        result = nanogcg.run(model, tokenizer, message, target, config)
-        
-        _forbidden_datum["forbidden_prompt"] = message
-        _forbidden_datum["jailbroken_prompt"] = [{"role": "user", "content": message + " " + result.best_string}]
-        _forbidden_datum["jailbreak"] = "refusal_gcg"
+    with open(f"GCG-{model_alias}.json", "a") as f:
+        for i, forbidden_datum in enumerate(forbidden_completions):
+            if i < num_cached:
+                continue
+            _forbidden_datum = copy.deepcopy(forbidden_datum)
+            message = _forbidden_datum["prompt"]
+            target = _forbidden_datum["response"]
 
-        del _forbidden_datum["prompt"]
+            # truncate target length
+            target = tokenizer.decode(tokenizer(target)["input_ids"][1:65])
 
-        jailbreaks.append(_forbidden_datum)
+            config = GCGConfig(
+                num_steps=500,
+                search_width=64,
+                topk=64,
+                seed=42,
+                verbosity="WARNING"
+            )
+            
+            result = nanogcg.run(model, tokenizer, message, target, config)
+            
+            _forbidden_datum["forbidden_prompt"] = message
+            _forbidden_datum["jailbroken_prompt"] = [{"role": "user", "content": message + result.best_string}]
+            _forbidden_datum["jailbreak"] = "refusal_gcg"
 
-    with open(f"GCG-{model_alias}.json", "w") as f:
-        for item in jailbreaks:
-            json_line = json.dumps(item)
+            del _forbidden_datum["prompt"]
+
+            json_line = json.dumps(_forbidden_datum)
             f.write(json_line + '\n')
 
 
