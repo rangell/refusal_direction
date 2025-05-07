@@ -222,7 +222,6 @@ def run_pipeline(model_path):
 
         break
 
-
     with open(f"GCG-{model_alias}.pkl", "wb") as f:
         pickle.dump(jailbreaks, f)
 

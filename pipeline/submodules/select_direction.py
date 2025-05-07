@@ -237,8 +237,6 @@ def select_direction(
             steering_score = steering_refusal_scores[source_pos, source_layer].item()
             kl_div_score = ablation_kl_div_scores[source_pos, source_layer].item()
 
-            from IPython import embed; embed(); exit()
-
             # we sort the directions in descending order (from highest to lowest score)
             # the intervention is better at bypassing refusal if the refusal score is low, so we multiply by -1
             sorting_score = -refusal_score
