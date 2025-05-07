@@ -227,6 +227,7 @@ def run_pipeline(model_path):
 
             json_line = json.dumps(_forbidden_datum)
             f.write(json_line + '\n')
+            f.flush()
 
 
 if __name__ == "__main__":
